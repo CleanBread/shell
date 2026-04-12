@@ -1,5 +1,10 @@
 use anyhow::{Context, Result};
-use std::{fmt::Display, io::stdin};
+use std::{
+    env::{self, SplitPaths},
+    fmt::Display,
+    io::stdin,
+    path::{Path, PathBuf},
+};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -21,6 +26,9 @@ pub fn pritn_error(message: impl Display) {
     eprintln!("{}", message);
 }
 
-// pub fn parse_input(input: &str) -> () {
-//   input.split_whitespace()
-// }
+pub fn get_paths() -> Result<Vec<PathBuf>> {
+    let paths = env::var_os("PATH").context("Getting PATH evn variable")?;
+    let split_paths = env::split_paths(&paths).filter(|path| path.is_dir());
+
+    Ok(split_paths.collect())
+}
