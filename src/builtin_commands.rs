@@ -1,7 +1,6 @@
-use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::{path::PathBuf, process};
 
-use crate::utils::{CustomError, pritn_error};
+use crate::utils::{CustomError, find_in_path, pritn_error};
 
 pub enum BuiltinCommand {
     Type(String),
@@ -27,41 +26,40 @@ impl BuiltinCommand {
             return;
         }
 
-        for path in paths {
-            let Ok(entries) = path.read_dir() else {
-                continue;
-            };
-
-            for entry in entries.flatten() {
-                if entry.file_name() != command_str {
-                    continue;
-                }
-
-                let Ok(metadata) = entry.metadata() else {
-                    continue;
-                };
-
-                let is_executable = metadata.permissions().mode() & 0o111 != 0;
-
-                if !is_executable {
-                    continue;
-                }
-
-                Self::builtin_echo(format!("{} is {}", command_str, entry.path().display()));
-
-                return;
-            }
+        if let Some(entry) = find_in_path(paths, command_str, Some(0o111)) {
+            Self::builtin_echo(format!("{} is {}", command_str, entry.path().display()));
+        } else {
+            Self::builtin_echo(format!("{}: not found", command_str));
         }
-
-        Self::builtin_echo(format!("{}: not found", command_str));
     }
 
     pub(crate) fn builtin_echo(text: String) {
         println!("{}", text);
     }
 
-    pub(crate) fn builtin_not_found(command: String) {
-        pritn_error(CustomError::CommandNotFound(command));
+    pub(crate) fn builtin_not_found(paths: &[PathBuf], input: String) {
+        let (command_str, command_args) = Self::parse_input(input.as_str());
+
+        if let Some(entry) = find_in_path(paths, command_str, Some(0o111)) {
+            let path = entry.path();
+
+            if path.is_file() {
+                let command_args = command_args.split_whitespace();
+
+                match process::Command::new(&path).args(command_args).status() {
+                    Ok(status) => {
+                        if !status.success() {
+                            eprintln!("Command failed for {:?}", path);
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("Command failed: {:?}", error);
+                    }
+                };
+            }
+        } else {
+            pritn_error(CustomError::CommandNotFound(command_str.to_string()));
+        }
     }
 }
 
@@ -73,7 +71,7 @@ impl From<&str> for BuiltinCommand {
             "type" => Self::Type(args.to_owned()),
             "echo" => Self::Echo(args.to_owned()),
             "exit" => Self::Exit,
-            _ => Self::NotFound(command.to_owned()),
+            _ => Self::NotFound(input.to_owned()),
         }
     }
 }

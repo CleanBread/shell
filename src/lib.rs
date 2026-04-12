@@ -3,7 +3,7 @@ use std::io::{self, Write};
 
 use crate::{
     builtin_commands::BuiltinCommand,
-    utils::{CustomError, get_paths, get_user_input, pritn_error},
+    utils::{get_paths, get_user_input},
 };
 
 mod builtin_commands;
@@ -22,7 +22,7 @@ pub fn run() -> Result<()> {
             BuiltinCommand::Exit => break,
             BuiltinCommand::Type(args) => BuiltinCommand::builtin_type(&paths, args),
             BuiltinCommand::Echo(text) => BuiltinCommand::builtin_echo(text),
-            BuiltinCommand::NotFound(command) => BuiltinCommand::builtin_not_found(command),
+            BuiltinCommand::NotFound(input) => BuiltinCommand::builtin_not_found(&paths, input),
         }
     }
 
