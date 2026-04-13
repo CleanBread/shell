@@ -1,8 +1,10 @@
-use std::{path::PathBuf, process};
+use std::{env, path::PathBuf, process};
 
 use crate::utils::{CustomError, find_in_path, pritn_error};
 
 pub enum BuiltinCommand {
+    ChangeDirectory(String),
+    Pwd,
     Type(String),
     Echo(String),
     Exit,
@@ -17,8 +19,31 @@ impl BuiltinCommand {
         }
     }
 
+    pub(crate) fn builtin_cd(args: String) {
+        let home = env::var("HOME").unwrap_or_else(|_| "/".to_string());
+        let target = match Self::parse_input(&args).0 {
+            "" | "~" => home.clone(),
+            path => path.replace("~", &home),
+        };
+
+        if let Err(error) = std::env::set_current_dir(&target) {
+            eprintln!("{}", error);
+        }
+    }
+
+    pub(crate) fn builtin_pwd() {
+        match env::current_dir() {
+            Ok(path) => {
+                Self::builtin_echo(format!("{}", path.display()));
+            }
+            Err(error) => {
+                eprintln!("{}", error);
+            }
+        }
+    }
+
     pub(crate) fn builtin_type(paths: &[PathBuf], args: String) {
-        let command_str = Self::parse_input(args.as_str()).0;
+        let command_str = Self::parse_input(&args).0;
 
         if !matches!(command_str.into(), BuiltinCommand::NotFound(_)) {
             Self::builtin_echo(format!("{}: is a shell builtin", command_str));
@@ -38,7 +63,7 @@ impl BuiltinCommand {
     }
 
     pub(crate) fn builtin_not_found(paths: &[PathBuf], input: String) {
-        let (command_str, command_args) = Self::parse_input(input.as_str());
+        let (command_str, command_args) = Self::parse_input(&input);
 
         if let Some(entry) = find_in_path(paths, command_str, Some(0o111)) {
             let path = entry.path();
@@ -68,6 +93,8 @@ impl From<&str> for BuiltinCommand {
         let (command, args) = Self::parse_input(input);
 
         match command {
+            "cd" => Self::ChangeDirectory(args.to_owned()),
+            "pwd" => Self::Pwd,
             "type" => Self::Type(args.to_owned()),
             "echo" => Self::Echo(args.to_owned()),
             "exit" => Self::Exit,

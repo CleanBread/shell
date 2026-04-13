@@ -19,10 +19,12 @@ pub fn run() -> Result<()> {
         let builtin = get_user_input()?.as_str().into();
 
         match builtin {
-            BuiltinCommand::Exit => break,
+            BuiltinCommand::ChangeDirectory(args) => BuiltinCommand::builtin_cd(args),
+            BuiltinCommand::Pwd => BuiltinCommand::builtin_pwd(),
             BuiltinCommand::Type(args) => BuiltinCommand::builtin_type(&paths, args),
             BuiltinCommand::Echo(text) => BuiltinCommand::builtin_echo(text),
             BuiltinCommand::NotFound(input) => BuiltinCommand::builtin_not_found(&paths, input),
+            BuiltinCommand::Exit => break,
         }
     }
 
