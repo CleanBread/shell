@@ -16,13 +16,17 @@ pub fn run() -> Result<()> {
         print!("$ ");
         io::stdout().flush().unwrap();
 
-        let builtin = get_user_input()?.as_str().into();
+        let input = get_user_input()?;
 
-        match builtin {
+        if input.is_empty() {
+            continue;
+        }
+
+        match input.into() {
             BuiltinCommand::ChangeDirectory(args) => BuiltinCommand::builtin_cd(args),
             BuiltinCommand::Pwd => BuiltinCommand::builtin_pwd(),
             BuiltinCommand::Type(args) => BuiltinCommand::builtin_type(&paths, args),
-            BuiltinCommand::Echo(text) => BuiltinCommand::builtin_echo(text),
+            BuiltinCommand::Echo(args) => BuiltinCommand::builtin_echo(args),
             BuiltinCommand::NotFound(input) => BuiltinCommand::builtin_not_found(&paths, input),
             BuiltinCommand::Exit => break,
         }
