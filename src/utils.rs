@@ -37,6 +37,7 @@ pub fn get_paths() -> Result<Vec<PathBuf>> {
 #[cfg(unix)]
 fn is_executable(entry: &DirEntry) -> bool {
     use std::os::unix::fs::PermissionsExt;
+
     entry
         .metadata()
         .map(|m| m.permissions().mode() & 0o111 != 0)
