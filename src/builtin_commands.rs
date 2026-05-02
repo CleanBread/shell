@@ -111,7 +111,10 @@ impl BuiltinCommand {
     }
 
     pub(crate) fn builtin_type(paths: &[PathBuf], args: &[String]) -> ExecuteOutput {
-        let command_str = args.get(0).unwrap();
+        let Some(command_str) = args.get(0) else {
+            return ExecuteOutput::new();
+        };
+
         let command: BuiltinCommand = command_str.clone().into();
 
         if !matches!(command, BuiltinCommand::NotFound(_)) {
@@ -174,7 +177,7 @@ impl BuiltinCommand {
                 let file = fs::OpenOptions::new().append(true).create(true).open(path);
 
                 if let Result::Ok(mut file) = file {
-                    file.write_all(&output.out).ok();
+                    file.write_all(output.out.as_bytes()).ok();
                 }
 
                 return ExecuteOutput::new();
@@ -192,7 +195,7 @@ impl BuiltinCommand {
                 let file = fs::OpenOptions::new().append(true).create(true).open(path);
 
                 if let Result::Ok(mut file) = file {
-                    file.write_all(&output.err).ok();
+                    file.write_all(output.err.as_bytes()).ok();
                 }
 
                 return ExecuteOutput::new();

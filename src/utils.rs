@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
 use std::{
     env::{self},
-    fmt::Display,
     fs::DirEntry,
-    io::stdin,
+    io::{Write, stdin, stdout},
     path::PathBuf,
 };
+use termion::{cursor, event::Key, input::TermRead};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -15,23 +15,77 @@ pub enum CustomError {
 }
 
 pub fn get_user_input() -> Result<String> {
-    let mut user_input = String::new();
-    stdin()
-        .read_line(&mut user_input)
-        .context("reading use input")?;
+    let mut stdout = stdout().lock();
+    let stdin = stdin().lock();
+    let mut input = String::new();
 
-    Ok(user_input.trim().to_string())
-}
+    let mut input_pos: usize = 0;
 
-pub fn pritn_error(message: impl Display) {
-    eprintln!("{}", message);
+    write!(stdout, "\r\n$ ")?;
+    stdout.flush()?;
+
+    for k in stdin.keys() {
+        match k.as_ref().unwrap() {
+            Key::Char('\t') => print!("TAB"), // TODO: impl autocomplete
+            Key::Char('\n') => break,
+            Key::Char(c) => {
+                input.insert(input_pos, *c);
+                input_pos += 1;
+
+                write!(stdout, "{}", &input[input_pos - 1..])?;
+
+                let tail = input.len() - input_pos;
+                if tail > 0 {
+                    write!(stdout, "{}", cursor::Left(tail as u16))?;
+                }
+            }
+            Key::Backspace => {
+                if input_pos > 0 {
+                    input_pos -= 1;
+                    input.remove(input_pos);
+
+                    write!(stdout, "{}", cursor::Left(1))?;
+                    write!(stdout, "{} ", &input[input_pos..])?;
+
+                    let tail = input.len() - input_pos + 1;
+                    write!(stdout, "{}", cursor::Left(tail as u16))?;
+                }
+            }
+            Key::Left => {
+                if input_pos > 0 {
+                    input_pos -= 1;
+
+                    write!(stdout, "{}", cursor::Left(1))?;
+                }
+            }
+            Key::Right => {
+                if input_pos < input.len() {
+                    input_pos += 1;
+
+                    write!(stdout, "{}", cursor::Right(1))?;
+                }
+            }
+
+            Key::Up => print!("↑"),   // TODO: impl history
+            Key::Down => print!("↓"), // TODO: impl history
+            _ => {
+                print!("{:?}", k)
+            }
+        }
+
+        stdout.flush()?;
+    }
+
+    Ok(input.trim().to_string())
 }
 
 pub fn get_paths() -> Result<Vec<PathBuf>> {
     let paths = env::var_os("PATH").context("Getting PATH evn variable")?;
     let split_paths = env::split_paths(&paths).filter(|path| path.is_dir());
 
-    Ok(split_paths.inspect(|x| println!("{x:?}")).collect())
+    Ok(split_paths
+        // .inspect(|x| println!("{x:?}"))
+        .collect())
 }
 
 #[cfg(unix)]

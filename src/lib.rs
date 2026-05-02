@@ -1,5 +1,9 @@
 use anyhow::{Ok, Result};
-use std::io::{self, Write, stderr, stdout};
+use std::io::{Write, stderr, stdout};
+use termion::{
+    cursor::{self},
+    raw::IntoRawMode,
+};
 
 use crate::{
     builtin_commands::BuiltinCommand,
@@ -12,12 +16,21 @@ mod execute_output;
 mod utils;
 
 pub fn run() -> Result<()> {
+    let mut stdout = stdout().lock().into_raw_mode().unwrap();
+    let mut stderr = stderr().lock().into_raw_mode().unwrap();
+
+    write!(
+        stdout,
+        "{}{}",
+        termion::clear::All,
+        cursor::BlinkingUnderline,
+    )
+    .unwrap();
+    stdout.flush().unwrap();
+
     let paths = get_paths()?;
 
     loop {
-        print!("$ ");
-        io::stdout().flush().unwrap();
-
         let input = get_user_input()?;
 
         if input.is_empty() {
@@ -30,16 +43,25 @@ pub fn run() -> Result<()> {
         let command: BuiltinCommand = command.as_str().into();
         let ExecuteOutput { out, err, exit } = command.execute(&args, &paths);
 
-        stdout().write(&out).ok();
-        stdout().flush()?;
+        if !out.is_empty() {
+            let text = out.trim_end_matches('\n').replace('\n', "\r\n");
+            write!(stdout, "\r\n{}", text)?;
+            stdout.flush()?;
+        }
 
-        stderr().write(&err).ok();
-        stderr().flush()?;
+        if !err.is_empty() {
+            let text = err.trim_end_matches('\n').replace('\n', "\r\n");
+            write!(stderr, "\r\n{}", text)?;
+            stderr.flush()?;
+        }
 
         if exit {
             break;
         }
     }
+
+    stdout.suspend_raw_mode().unwrap();
+    stderr.suspend_raw_mode().unwrap();
 
     Ok(())
 }

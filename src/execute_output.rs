@@ -2,23 +2,23 @@ use std::process::Output;
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct ExecuteOutput {
-    pub(crate) out: Vec<u8>,
-    pub(crate) err: Vec<u8>,
+    pub(crate) out: String,
+    pub(crate) err: String,
     pub(crate) exit: bool,
 }
 
 impl ExecuteOutput {
     pub(crate) const fn new() -> Self {
         Self {
-            out: vec![],
-            err: vec![],
+            out: String::new(),
+            err: String::new(),
             exit: false,
         }
     }
 
-    pub(crate) fn err(value: impl AsRef<[u8]>) -> Self {
+    pub(crate) fn err(value: String) -> Self {
         Self {
-            err: value.as_ref().to_vec(),
+            err: value,
             ..ExecuteOutput::new()
         }
     }
@@ -34,7 +34,7 @@ impl ExecuteOutput {
 impl From<String> for ExecuteOutput {
     fn from(value: String) -> Self {
         Self {
-            out: (value + "\n").into_bytes(),
+            out: value,
             ..Self::new()
         }
     }
@@ -50,7 +50,7 @@ impl From<Option<String>> for ExecuteOutput {
     fn from(value: Option<String>) -> Self {
         match value {
             Some(value) => Self {
-                out: value.as_bytes().to_vec(),
+                out: value,
                 ..Self::new()
             },
             None => Self::new(),
@@ -61,8 +61,8 @@ impl From<Option<String>> for ExecuteOutput {
 impl From<Output> for ExecuteOutput {
     fn from(value: Output) -> Self {
         Self {
-            out: value.stdout,
-            err: value.stderr,
+            out: String::from_utf8_lossy(&value.stdout).into_owned(),
+            err: String::from_utf8_lossy(&value.stderr).into_owned(),
             ..ExecuteOutput::new()
         }
     }
