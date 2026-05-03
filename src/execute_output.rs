@@ -1,4 +1,7 @@
-use std::process::Output;
+use std::{
+    io::{Write, stdout},
+    process::Output,
+};
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct ExecuteOutput {
@@ -60,6 +63,9 @@ impl From<Option<String>> for ExecuteOutput {
 
 impl From<Output> for ExecuteOutput {
     fn from(value: Output) -> Self {
+        // stdout().write(&value.stderr).unwrap();
+        // stdout().flush().unwrap();
+
         Self {
             out: String::from_utf8_lossy(&value.stdout).into_owned(),
             err: String::from_utf8_lossy(&value.stderr).into_owned(),

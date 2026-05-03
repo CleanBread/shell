@@ -129,7 +129,7 @@ impl BuiltinCommand {
     }
 
     pub(crate) fn builtin_echo(args: &[String]) -> ExecuteOutput {
-        format!("{}", args.join(" ")).into()
+        format!("{}\n", args.join(" ").replace("\\n", "\n")).into()
     }
 
     pub(crate) fn builtin_not_found(
@@ -163,46 +163,6 @@ impl BuiltinCommand {
     }
 
     pub(crate) fn execute(&self, args: &[String], paths: &[PathBuf]) -> ExecuteOutput {
-        match args {
-            [head @ .., arg, path] if arg == ">" || arg == "1>" => {
-                let output = self.execute(head, paths);
-
-                fs::write(path, output.out).ok();
-
-                return ExecuteOutput::new();
-            }
-            [head @ .., arg, path] if arg == ">>" || arg == "1>>" => {
-                let output = self.execute(head, paths);
-
-                let file = fs::OpenOptions::new().append(true).create(true).open(path);
-
-                if let Result::Ok(mut file) = file {
-                    file.write_all(output.out.as_bytes()).ok();
-                }
-
-                return ExecuteOutput::new();
-            }
-            [head @ .., arg, path] if arg == "2>" => {
-                let output = self.execute(head, paths);
-
-                fs::write(path, output.err).ok();
-
-                return ExecuteOutput::new();
-            }
-            [head @ .., arg, path] if arg == "2>>" => {
-                let output = self.execute(head, paths);
-
-                let file = fs::OpenOptions::new().append(true).create(true).open(path);
-
-                if let Result::Ok(mut file) = file {
-                    file.write_all(output.err.as_bytes()).ok();
-                }
-
-                return ExecuteOutput::new();
-            }
-            _ => (),
-        }
-
         match self {
             BuiltinCommand::ChangeDirectory => BuiltinCommand::builtin_cd(args),
             BuiltinCommand::Pwd => BuiltinCommand::builtin_pwd(),
