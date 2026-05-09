@@ -1,4 +1,5 @@
-use std::{env, fs, io::Write, mem, path::PathBuf, process};
+use anyhow::Result;
+use std::{env, mem, path::PathBuf, process};
 
 use crate::{
     execute_output::ExecuteOutput,
@@ -6,28 +7,30 @@ use crate::{
 };
 
 #[derive(PartialEq)]
-pub enum BuiltinCommand {
+pub enum Command {
     ChangeDirectory,
     Type,
     Echo,
-    NotFound(String),
     Pwd,
     Exit,
+    External(String),
 }
 
-impl BuiltinCommand {
-    pub(crate) fn parse_input(args: &str) -> Vec<String> {
+impl Command {
+    pub(crate) fn parse_input(args: &str) -> Vec<Vec<String>> {
+        args.split(" | ").map(Self::parse_command).collect()
+    }
+
+    fn parse_command(command: &str) -> Vec<String> {
         let mut result = vec![];
         let mut current = String::new();
-        let mut chars = args.chars();
-
+        let mut chars = command.chars();
         let mut is_backslash = false;
 
         while let Some(c) = chars.next() {
             if is_backslash {
                 current.push(c);
                 is_backslash = false;
-
                 continue;
             }
 
@@ -37,7 +40,6 @@ impl BuiltinCommand {
                         if c == '\'' {
                             break;
                         }
-
                         current.push(c);
                     }
                 }
@@ -47,7 +49,6 @@ impl BuiltinCommand {
                     for c in chars.by_ref() {
                         if is_backslash {
                             is_backslash = false;
-
                             match c {
                                 '\\' | '"' | '$' | '`' | '\n' => current.push(c),
                                 _ => {
@@ -65,18 +66,13 @@ impl BuiltinCommand {
                         }
                     }
                 }
-
                 ' ' => {
                     if !current.is_empty() {
                         result.push(mem::take(&mut current));
                     }
                 }
-                '\\' => {
-                    is_backslash = true;
-                }
-                _ => {
-                    current.push(c);
-                }
+                '\\' => is_backslash = true,
+                _ => current.push(c),
             }
         }
 
@@ -115,9 +111,9 @@ impl BuiltinCommand {
             return ExecuteOutput::new();
         };
 
-        let command: BuiltinCommand = command_str.clone().into();
+        let command: Command = command_str.clone().into();
 
-        if !matches!(command, BuiltinCommand::NotFound(_)) {
+        if !matches!(command, Command::External(_)) {
             return format!("{}: is a shell builtin", command_str).into();
         }
 
@@ -132,64 +128,59 @@ impl BuiltinCommand {
         format!("{}\n", args.join(" ").replace("\\n", "\n")).into()
     }
 
-    pub(crate) fn builtin_not_found(
+    pub(crate) fn execute_external(
         paths: &[PathBuf],
-        command_str: &str,
-        command_args: &[String],
-    ) -> ExecuteOutput {
-        if let Some(entry) = find_in_path(paths, command_str, Some(0o111)) {
+        command: &str,
+        args: &[String],
+        stdin: process::Stdio,
+        stdout: process::Stdio,
+        stderr: process::Stdio,
+        // input: Option<PipeInput>,
+    ) -> Result<process::Child> {
+        if let Some(entry) = find_in_path(paths, command, Some(0o111)) {
             let path = entry.path();
 
             if path.is_file() {
-                let mut command = process::Command::new(&path);
-                command.args(command_args);
+                let child = process::Command::new(&path)
+                    .args(args)
+                    .stdin(stdin)
+                    .stdout(stdout)
+                    .stderr(stderr)
+                    .spawn()?;
 
-                match command.output() {
-                    Ok(output) => {
-                        if !output.status.success() {
-                            return ExecuteOutput::err(format!("Command failed for {:?}", path));
-                        }
-
-                        return output.into();
-                    }
-                    Err(error) => {
-                        return ExecuteOutput::err(format!("Command failed: {:?}", error));
-                    }
-                };
+                return Ok(child);
             }
         }
 
-        ExecuteOutput::err(CustomError::CommandNotFound(command_str.to_string()).to_string())
+        Err(CustomError::CommandNotFound(command.to_string()).into())
     }
 
-    pub(crate) fn execute(&self, args: &[String], paths: &[PathBuf]) -> ExecuteOutput {
+    pub(crate) fn execute_builtin(&self, args: &[String], paths: &[PathBuf]) -> ExecuteOutput {
         match self {
-            BuiltinCommand::ChangeDirectory => BuiltinCommand::builtin_cd(args),
-            BuiltinCommand::Pwd => BuiltinCommand::builtin_pwd(),
-            BuiltinCommand::Type => BuiltinCommand::builtin_type(&paths, args),
-            BuiltinCommand::Echo => BuiltinCommand::builtin_echo(args),
-            BuiltinCommand::NotFound(command) => {
-                BuiltinCommand::builtin_not_found(&paths, command, args)
-            }
-            BuiltinCommand::Exit => ExecuteOutput::exit(),
+            Command::ChangeDirectory => Command::builtin_cd(args),
+            Command::Pwd => Command::builtin_pwd(),
+            Command::Type => Command::builtin_type(&paths, args),
+            Command::Echo => Command::builtin_echo(args),
+            Command::Exit => ExecuteOutput::exit(),
+            _ => ExecuteOutput::new(),
         }
     }
 }
 
-impl From<&str> for BuiltinCommand {
+impl From<&str> for Command {
     fn from(command: &str) -> Self {
         match command {
-            "cd" => BuiltinCommand::ChangeDirectory,
-            "pwd" => BuiltinCommand::Pwd,
-            "type" => BuiltinCommand::Type,
-            "echo" => BuiltinCommand::Echo,
-            "exit" => BuiltinCommand::Exit,
-            _ => BuiltinCommand::NotFound(command.to_owned()),
+            "cd" => Command::ChangeDirectory,
+            "pwd" => Command::Pwd,
+            "type" => Command::Type,
+            "echo" => Command::Echo,
+            "exit" => Command::Exit,
+            _ => Command::External(command.to_owned()),
         }
     }
 }
 
-impl From<String> for BuiltinCommand {
+impl From<String> for Command {
     fn from(input: String) -> Self {
         Self::from(input.as_str())
     }

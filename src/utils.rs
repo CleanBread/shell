@@ -4,17 +4,25 @@ use std::{
     fs::DirEntry,
     io::{Write, stdin, stdout},
     path::PathBuf,
+    process,
 };
 use termion::{cursor, event::Key, input::TermRead};
 use thiserror::Error;
 
+use crate::execute_output::ExecuteOutput;
+
 #[derive(Debug, Error)]
 pub enum CustomError {
-    #[error("{0}: command not found\n")]
+    #[error("{0}: command not found")]
     CommandNotFound(String),
 }
 
-pub fn get_user_input() -> Result<String> {
+pub enum PipeInput {
+    Stream(process::ChildStdout),
+    Buffer(ExecuteOutput),
+}
+
+pub fn get_input() -> Result<String> {
     let mut stdout = stdout().lock();
     let stdin = stdin().lock();
     let mut input = String::new();
@@ -27,7 +35,11 @@ pub fn get_user_input() -> Result<String> {
     for k in stdin.keys() {
         match k.as_ref().unwrap() {
             Key::Char('\t') => print!("TAB"), // TODO: impl autocomplete
-            Key::Char('\n') => break,
+            Key::Char('\n') => {
+                write!(stdout, "\r\n")?;
+                stdout.flush()?;
+                break;
+            }
             Key::Char(c) => {
                 input.insert(input_pos, *c);
                 input_pos += 1;

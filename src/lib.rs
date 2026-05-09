@@ -1,7 +1,9 @@
-use anyhow::{Ok, Result};
+use anyhow::Result;
+use os_pipe::pipe;
 use std::{
     fs,
     io::{Write, stderr, stdout},
+    process,
 };
 use termion::{
     cursor::{self},
@@ -9,15 +11,16 @@ use termion::{
 };
 
 use crate::{
-    builtin_commands::BuiltinCommand,
+    command::Command,
     execute_output::ExecuteOutput,
     redirection::Redirection,
-    utils::{get_paths, get_user_input},
+    utils::{PipeInput, get_input, get_paths},
 };
 
-mod builtin_commands;
+mod command;
 mod execute_output;
 mod redirection;
+mod test;
 mod utils;
 
 pub fn run() -> Result<()> {
@@ -36,65 +39,153 @@ pub fn run() -> Result<()> {
     let paths = get_paths()?;
 
     loop {
-        let input = get_user_input()?;
+        let input = get_input()?;
 
         if input.is_empty() {
             continue;
         }
 
-        let parsed_input = BuiltinCommand::parse_input(&input);
-        let (command, args) = parsed_input.split_first().unwrap();
+        let piped_commands = Command::parse_input(&input);
+        let mut pipe_input: Option<PipeInput> = None;
+        let mut children: Vec<process::Child> = vec![];
 
-        let command: BuiltinCommand = command.as_str().into();
+        for command in piped_commands {
+            let (command, args) = command.split_first().unwrap();
 
-        let (args, redirection) = Redirection::extract(args);
+            let command: Command = command.as_str().into();
 
-        let ExecuteOutput { out, err, exit } = command.execute(&args, &paths);
+            let (args, redirection) = Redirection::extract(args);
 
-        if let Some(redirection) = redirection {
-            match redirection {
-                Redirection::RedirectStdout(path) => {
-                    fs::write(path, out).ok();
-                }
-                Redirection::RedirectStderr(path) => {
-                    fs::write(path, err).ok();
-                }
-                Redirection::AppendStdout(path) => {
-                    let file = fs::OpenOptions::new().append(true).create(true).open(path);
+            match command {
+                Command::External(external) => {
+                    let stdin = match pipe_input.take() {
+                        Some(input) => match input {
+                            PipeInput::Stream(child_stdout) => process::Stdio::from(child_stdout),
+                            PipeInput::Buffer(buffer) => {
+                                let (reader, mut writer) = pipe()?;
 
-                    if let Result::Ok(mut file) = file {
-                        file.write_all(out.as_bytes()).ok();
+                                std::thread::spawn(move || writer.write_all(buffer.out.as_bytes()));
+
+                                process::Stdio::from(reader)
+                            }
+                        },
+                        None => process::Stdio::inherit(),
+                    };
+
+                    let (stdout, stderr) = match redirection {
+                        Some(redirection) => match redirection {
+                            Redirection::RedirectStdout(path) => {
+                                let file = fs::File::create(path)?;
+
+                                (process::Stdio::from(file), process::Stdio::inherit())
+                            }
+                            Redirection::RedirectStderr(path) => {
+                                let file = fs::File::create(path)?;
+
+                                (process::Stdio::piped(), process::Stdio::from(file))
+                            }
+                            Redirection::AppendStdout(path) => {
+                                let file = fs::OpenOptions::new()
+                                    .append(true)
+                                    .create(true)
+                                    .open(path)?;
+
+                                (process::Stdio::from(file), process::Stdio::inherit())
+                            }
+                            Redirection::AppendStderr(path) => {
+                                let file = fs::OpenOptions::new()
+                                    .append(true)
+                                    .create(true)
+                                    .open(path)?;
+
+                                (process::Stdio::piped(), process::Stdio::from(file))
+                            }
+                        },
+                        None => (process::Stdio::piped(), process::Stdio::inherit()),
+                    };
+
+                    match Command::execute_external(&paths, &external, args, stdin, stdout, stderr)
+                    {
+                        Ok(mut child) => {
+                            pipe_input = match child.stdout.take() {
+                                Some(out) => Some(PipeInput::Stream(out)),
+                                None => Some(PipeInput::Buffer(ExecuteOutput::new())),
+                            };
+
+                            children.push(child);
+                        }
+                        Err(error) => {
+                            pipe_input =
+                                Some(PipeInput::Buffer(ExecuteOutput::err(error.to_string())));
+
+                            break;
+                        }
                     }
                 }
-                Redirection::AppendStderr(path) => {
-                    let file = fs::OpenOptions::new().append(true).create(true).open(path);
+                _ => {
+                    let output = command.execute_builtin(&args, &paths);
 
-                    if let Result::Ok(mut file) = file {
-                        file.write_all(err.as_bytes()).ok();
+                    if let Some(redirection) = redirection {
+                        match redirection {
+                            Redirection::RedirectStdout(path) => {
+                                fs::write(path, output.out).ok();
+                            }
+                            Redirection::RedirectStderr(path) => {
+                                fs::write(path, output.err).ok();
+                            }
+                            Redirection::AppendStdout(path) => {
+                                let file =
+                                    fs::OpenOptions::new().append(true).create(true).open(path);
+
+                                if let Result::Ok(mut file) = file {
+                                    file.write_all(output.out.as_bytes()).ok();
+                                }
+                            }
+                            Redirection::AppendStderr(path) => {
+                                let file =
+                                    fs::OpenOptions::new().append(true).create(true).open(path);
+
+                                if let Result::Ok(mut file) = file {
+                                    file.write_all(output.err.as_bytes()).ok();
+                                }
+                            }
+                        };
+                    } else {
+                        pipe_input = Some(PipeInput::Buffer(output))
                     }
                 }
             };
-        } else {
-            if !out.is_empty() {
-                let text = out.trim_end_matches('\n').replace('\n', "\r\n");
-                write!(stdout, "\r\n{}", text)?;
-                stdout.flush()?;
-            }
-
-            if !err.is_empty() {
-                let text = err.trim_end_matches('\n').replace('\n', "\r\n");
-                write!(stderr, "\r\n{}", text)?;
-                stderr.flush()?;
-            }
         }
 
-        if exit {
-            break;
+        for mut child in children {
+            child.wait()?;
+        }
+
+        match pipe_input {
+            Some(PipeInput::Stream(mut stream)) => {
+                stdout.suspend_raw_mode().unwrap();
+                std::io::copy(&mut stream, &mut std::io::stdout())?;
+                stdout.activate_raw_mode().unwrap();
+            }
+            Some(PipeInput::Buffer(output)) => {
+                if output.exit {
+                    stdout.suspend_raw_mode().unwrap();
+                    stderr.suspend_raw_mode().unwrap();
+
+                    return Ok(());
+                }
+
+                if !output.out.is_empty() {
+                    write!(stdout, "{}", output.out)?;
+                    stdout.flush()?;
+                }
+
+                if !output.err.is_empty() {
+                    write!(stderr, "{}", output.err)?;
+                    stderr.flush()?;
+                }
+            }
+            _ => {}
         }
     }
-
-    stdout.suspend_raw_mode().unwrap();
-    stderr.suspend_raw_mode().unwrap();
-
-    Ok(())
 }
