@@ -23,8 +23,6 @@ mod redirection;
 mod test;
 mod utils;
 
-// fn
-
 pub fn run() -> Result<()> {
     let mut stdout = stdout().lock().into_raw_mode().unwrap();
     let mut stderr = stderr().lock().into_raw_mode().unwrap();
@@ -192,6 +190,8 @@ pub fn run() -> Result<()> {
                     if !output.err.is_empty() {
                         write!(stderr, "{}", output.err)?;
                         stderr.flush()?;
+
+                        break;
                     }
                 }
                 _ => {}

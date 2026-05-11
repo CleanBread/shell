@@ -146,7 +146,7 @@ impl Command {
     }
 
     pub(crate) fn builtin_echo(args: &[String]) -> ExecuteOutput {
-        format!("{}\n", args.join(" ").replace("\\n", "\n")).into()
+        format!("{}\r\n", args.join(" ").replace("\\n", "\n")).into()
     }
 
     pub(crate) fn execute_external(
