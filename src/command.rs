@@ -6,6 +6,11 @@ use crate::{
     utils::{CustomError, find_in_path},
 };
 
+type Token = String;
+type CommandWithArgs = Vec<Token>;
+type Pipeline = Vec<CommandWithArgs>;
+type AndChain = Vec<Pipeline>;
+
 #[derive(PartialEq)]
 pub enum Command {
     ChangeDirectory,
@@ -17,8 +22,24 @@ pub enum Command {
 }
 
 impl Command {
-    pub(crate) fn parse_input(args: &str) -> Vec<Vec<String>> {
-        args.split(" | ").map(Self::parse_command).collect()
+    pub(crate) fn parse_input(input: &str) -> AndChain {
+        Self::parse_and_chain(input)
+            .into_iter()
+            .map(|pipeline| {
+                Self::parse_pipes(pipeline)
+                    .into_iter()
+                    .map(Self::parse_command)
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn parse_pipes(input: &str) -> Vec<&str> {
+        input.split(" | ").collect()
+    }
+
+    fn parse_and_chain(args: &str) -> Vec<&str> {
+        args.split(" && ").collect()
     }
 
     fn parse_command(command: &str) -> Vec<String> {
