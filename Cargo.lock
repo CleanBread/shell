@@ -53,6 +53,7 @@ name = "shell"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libc",
  "os_pipe",
  "termion",
  "thiserror",

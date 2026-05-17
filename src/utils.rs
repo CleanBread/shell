@@ -1,15 +1,15 @@
 use anyhow::{Context, Result};
+use libc::{POLLIN, WNOHANG, pollfd};
 use std::{
-    env::{self},
+    env,
     fs::DirEntry,
-    io::{Write, stdin, stdout},
+    io::{Write, stdout},
     path::PathBuf,
-    process,
+    sync::mpsc::{self, Receiver},
+    time::Duration,
 };
-use termion::{cursor, event::Key, input::TermRead};
+use termion::{cursor, event::Key};
 use thiserror::Error;
-
-use crate::execute_output::ExecuteOutput;
 
 #[derive(Debug, Error)]
 pub enum CustomError {
@@ -17,31 +17,34 @@ pub enum CustomError {
     CommandNotFound(String),
 }
 
-pub enum PipeInput {
-    Stream(process::ChildStdout),
-    Buffer(ExecuteOutput),
-}
-
-pub fn get_input() -> Result<String> {
-    let mut stdout = stdout().lock();
-    let stdin = stdin().lock();
+pub fn get_input(key_rx: &Receiver<Key>, job_rx: &Receiver<i32>) -> Result<String> {
+    let mut stdout = stdout();
     let mut input = String::new();
-
     let mut input_pos: usize = 0;
 
     write!(stdout, "\r\n$ ")?;
     stdout.flush()?;
 
-    for k in stdin.keys() {
-        match k.as_ref().unwrap() {
-            Key::Char('\t') => print!("TAB"), // TODO: impl autocomplete
-            Key::Char('\n') => {
+    loop {
+        while let Ok(_) = job_rx.try_recv() {
+            write!(stdout, "$ {}", input)?;
+            let tail = (input.len() - input_pos) as u16;
+            if tail > 0 {
+                write!(stdout, "{}", cursor::Left(tail))?;
+            }
+        }
+        stdout.flush()?;
+
+        // wait up to 50ms for a key, then loop back to check sigchld
+        match key_rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(Key::Char('\n')) => {
                 write!(stdout, "\r\n")?;
                 stdout.flush()?;
                 break;
             }
-            Key::Char(c) => {
-                input.insert(input_pos, *c);
+            Ok(Key::Char('\t')) => {}
+            Ok(Key::Char(c)) => {
+                input.insert(input_pos, c);
                 input_pos += 1;
 
                 write!(stdout, "{}", &input[input_pos - 1..])?;
@@ -50,8 +53,9 @@ pub fn get_input() -> Result<String> {
                 if tail > 0 {
                     write!(stdout, "{}", cursor::Left(tail as u16))?;
                 }
+                stdout.flush()?;
             }
-            Key::Backspace => {
+            Ok(Key::Backspace) => {
                 if input_pos > 0 {
                     input_pos -= 1;
                     input.remove(input_pos);
@@ -61,31 +65,28 @@ pub fn get_input() -> Result<String> {
 
                     let tail = input.len() - input_pos + 1;
                     write!(stdout, "{}", cursor::Left(tail as u16))?;
+                    stdout.flush()?;
                 }
             }
-            Key::Left => {
+            Ok(Key::Left) => {
                 if input_pos > 0 {
                     input_pos -= 1;
-
                     write!(stdout, "{}", cursor::Left(1))?;
+                    stdout.flush()?;
                 }
             }
-            Key::Right => {
+            Ok(Key::Right) => {
                 if input_pos < input.len() {
                     input_pos += 1;
-
                     write!(stdout, "{}", cursor::Right(1))?;
+                    stdout.flush()?;
                 }
             }
-
-            Key::Up => print!("↑"),   // TODO: impl history
-            Key::Down => print!("↓"), // TODO: impl history
-            _ => {
-                print!("{:?}", k)
-            }
+            Ok(Key::Up) | Ok(Key::Down) => {}
+            Ok(_) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
-
-        stdout.flush()?;
     }
 
     Ok(input.trim().to_string())
@@ -95,9 +96,7 @@ pub fn get_paths() -> Result<Vec<PathBuf>> {
     let paths = env::var_os("PATH").context("Getting PATH evn variable")?;
     let split_paths = env::split_paths(&paths).filter(|path| path.is_dir());
 
-    Ok(split_paths
-        // .inspect(|x| println!("{x:?}"))
-        .collect())
+    Ok(split_paths.collect())
 }
 
 #[cfg(unix)]

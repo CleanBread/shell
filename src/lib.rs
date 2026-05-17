@@ -1,31 +1,57 @@
 use anyhow::Result;
+use libc::{POLLIN, SIGCHLD, WNOHANG, c_int, fork, pollfd};
 use os_pipe::pipe;
-use std::{
-    fs,
-    io::{Write, stderr, stdout},
-    process,
-};
-use termion::{
-    cursor::{self},
-    raw::IntoRawMode,
-};
+use std::collections::BTreeMap;
+use std::io::{Write, stderr, stdin, stdout};
+use std::os::unix::io::AsRawFd;
+use std::sync::LazyLock;
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::{Mutex, mpsc};
+use std::thread;
+use termion::{cursor, event::Key, input::TermRead, raw::IntoRawMode};
 
 use crate::{
     command::Command,
-    execute_output::ExecuteOutput,
-    redirection::Redirection,
-    utils::{PipeInput, get_input, get_paths},
+    utils::{get_input, get_paths},
 };
 
 mod command;
 mod execute_output;
 mod redirection;
-mod test;
 mod utils;
 
+#[derive(Debug)]
+pub struct Job {
+    pid: i32,
+    command: String,
+}
+
+#[derive(Debug)]
+struct Jobs {
+    items: BTreeMap<u32, Job>,
+    next_counter: u32,
+}
+
+static JOBS: LazyLock<Mutex<Jobs>> = LazyLock::new(|| {
+    Mutex::new(Jobs {
+        items: BTreeMap::new(),
+        next_counter: 1,
+    })
+});
+
+static SIGCHLD_PIPE_WRITE: AtomicI32 = AtomicI32::new(-1);
+
+extern "C" fn sigchld_handler(_: c_int) {
+    let fd = SIGCHLD_PIPE_WRITE.load(Ordering::Relaxed);
+
+    if fd >= 0 {
+        unsafe { libc::write(fd, b"\x00".as_ptr() as *const libc::c_void, 1) };
+    }
+}
+
 pub fn run() -> Result<()> {
-    let mut stdout = stdout().lock().into_raw_mode().unwrap();
-    let mut stderr = stderr().lock().into_raw_mode().unwrap();
+    let mut stdout = stdout().into_raw_mode().unwrap();
+    let mut stderr = stderr().into_raw_mode().unwrap();
 
     write!(
         stdout,
@@ -36,166 +62,110 @@ pub fn run() -> Result<()> {
     .unwrap();
     stdout.flush().unwrap();
 
+    let (sigchld_reader, sigchld_writer) = pipe()?;
+    let sigchld_rfd = sigchld_reader.as_raw_fd();
+    let sigchld_wfd = sigchld_writer.as_raw_fd();
+
+    SIGCHLD_PIPE_WRITE.store(sigchld_wfd, Ordering::Relaxed);
+    unsafe { libc::signal(SIGCHLD, sigchld_handler as *const () as libc::sighandler_t) };
+
+    let (key_tx, key_rx) = mpsc::channel::<Key>();
+    thread::spawn(move || {
+        for key in stdin().keys().flatten() {
+            if key_tx.send(key).is_err() {
+                break;
+            }
+        }
+    });
+
+    let (job_tx, job_rx) = mpsc::channel::<i32>();
+
+    thread::spawn(move || {
+        loop {
+            let mut fds = [pollfd {
+                fd: sigchld_rfd,
+                events: POLLIN,
+                revents: 0,
+            }];
+            unsafe { libc::poll(fds.as_mut_ptr(), 1, -1) };
+
+            let mut buf = [0u8; 64];
+            unsafe { libc::read(sigchld_rfd, buf.as_mut_ptr() as *mut libc::c_void, 64) };
+
+            loop {
+                let pid = unsafe { libc::waitpid(-1, std::ptr::null_mut(), WNOHANG) };
+                if pid <= 0 {
+                    break;
+                }
+                let mut jobs = JOBS.lock().unwrap();
+
+                job_tx.send(pid).ok();
+
+                let job_num = jobs
+                    .items
+                    .iter()
+                    .find(|(_, job)| job.pid == pid)
+                    .map(|(num, _)| *num);
+
+                if let Some(num) = job_num {
+                    let job = jobs.items.remove(&num).unwrap();
+                    jobs.next_counter = num;
+
+                    write!(std::io::stdout(), "\r[{}] Done    {}\r\n", num, job.command).unwrap();
+                    std::io::stdout().flush().unwrap();
+                    // eprintln!("\r[{}] Done    {}\r\n", num, job.command); // debug
+                }
+            }
+        }
+    });
+
     let paths = get_paths()?;
 
     loop {
-        let input = get_input()?;
+        let input = get_input(&key_rx, &job_rx)?;
 
         if input.is_empty() {
             continue;
         }
 
-        let and_chain = Command::parse_input(&input);
+        let (and_chain, is_background_job) = Command::parse_input(&input);
 
-        for pipeline in and_chain {
-            let mut children: Vec<process::Child> = vec![];
-            let mut pipe_input: Option<PipeInput> = None;
+        if is_background_job {
+            let pid = unsafe { fork() };
 
-            for command in pipeline {
-                let (command, args) = command.split_first().unwrap();
-
-                let command: Command = command.as_str().into();
-
-                let (args, redirection) = Redirection::extract(args);
-
-                match command {
-                    Command::External(external) => {
-                        let stdin = match pipe_input.take() {
-                            Some(input) => match input {
-                                PipeInput::Stream(child_stdout) => {
-                                    process::Stdio::from(child_stdout)
-                                }
-                                PipeInput::Buffer(buffer) => {
-                                    let (reader, mut writer) = pipe()?;
-
-                                    std::thread::spawn(move || {
-                                        writer.write_all(buffer.out.as_bytes())
-                                    });
-
-                                    process::Stdio::from(reader)
-                                }
-                            },
-                            None => process::Stdio::inherit(),
-                        };
-
-                        let (stdout, stderr) = match redirection {
-                            Some(redirection) => match redirection {
-                                Redirection::RedirectStdout(path) => {
-                                    let file = fs::File::create(path)?;
-
-                                    (process::Stdio::from(file), process::Stdio::inherit())
-                                }
-                                Redirection::RedirectStderr(path) => {
-                                    let file = fs::File::create(path)?;
-
-                                    (process::Stdio::piped(), process::Stdio::from(file))
-                                }
-                                Redirection::AppendStdout(path) => {
-                                    let file = fs::OpenOptions::new()
-                                        .append(true)
-                                        .create(true)
-                                        .open(path)?;
-
-                                    (process::Stdio::from(file), process::Stdio::inherit())
-                                }
-                                Redirection::AppendStderr(path) => {
-                                    let file = fs::OpenOptions::new()
-                                        .append(true)
-                                        .create(true)
-                                        .open(path)?;
-
-                                    (process::Stdio::piped(), process::Stdio::from(file))
-                                }
-                            },
-                            None => (process::Stdio::piped(), process::Stdio::inherit()),
-                        };
-
-                        match Command::execute_external(
-                            &paths, &external, args, stdin, stdout, stderr,
-                        ) {
-                            Ok(mut child) => {
-                                pipe_input = match child.stdout.take() {
-                                    Some(out) => Some(PipeInput::Stream(out)),
-                                    None => Some(PipeInput::Buffer(ExecuteOutput::new())),
-                                };
-
-                                children.push(child);
-                            }
-                            Err(error) => {
-                                pipe_input =
-                                    Some(PipeInput::Buffer(ExecuteOutput::err(error.to_string())));
-
-                                break;
-                            }
-                        }
-                    }
-                    _ => {
-                        let output = command.execute_builtin(&args, &paths);
-
-                        if let Some(redirection) = redirection {
-                            match redirection {
-                                Redirection::RedirectStdout(path) => {
-                                    fs::write(path, output.out).ok();
-                                }
-                                Redirection::RedirectStderr(path) => {
-                                    fs::write(path, output.err).ok();
-                                }
-                                Redirection::AppendStdout(path) => {
-                                    let file =
-                                        fs::OpenOptions::new().append(true).create(true).open(path);
-
-                                    if let Result::Ok(mut file) = file {
-                                        file.write_all(output.out.as_bytes()).ok();
-                                    }
-                                }
-                                Redirection::AppendStderr(path) => {
-                                    let file =
-                                        fs::OpenOptions::new().append(true).create(true).open(path);
-
-                                    if let Result::Ok(mut file) = file {
-                                        file.write_all(output.err.as_bytes()).ok();
-                                    }
-                                }
-                            };
-                        } else {
-                            pipe_input = Some(PipeInput::Buffer(output))
-                        }
-                    }
-                };
-            }
-
-            for mut child in children {
-                child.wait()?;
-            }
-
-            match pipe_input {
-                Some(PipeInput::Stream(mut stream)) => {
-                    stdout.suspend_raw_mode().unwrap();
-                    std::io::copy(&mut stream, &mut std::io::stdout())?;
-                    stdout.activate_raw_mode().unwrap();
+            if pid < 0 {
+                write!(stdout, "\r\nfork failed\r\n")?;
+            } else if pid == 0 {
+                unsafe {
+                    libc::close(sigchld_rfd);
+                    libc::close(sigchld_wfd);
                 }
-                Some(PipeInput::Buffer(output)) => {
-                    if output.exit {
-                        stdout.suspend_raw_mode().unwrap();
-                        stderr.suspend_raw_mode().unwrap();
+                let _ = Command::execute(&paths, and_chain, true);
+                std::process::exit(0);
+            } else {
+                let mut jobs = JOBS.lock().unwrap();
+                let job_num = jobs.next_counter;
+                jobs.items.insert(
+                    job_num,
+                    Job {
+                        pid,
+                        command: input.clone(),
+                    },
+                );
 
-                        return Ok(());
-                    }
+                jobs.next_counter = *jobs.items.last_key_value().unwrap().0;
 
-                    if !output.out.is_empty() {
-                        write!(stdout, "{}", output.out)?;
-                        stdout.flush()?;
-                    }
-
-                    if !output.err.is_empty() {
-                        write!(stderr, "{}", output.err)?;
-                        stderr.flush()?;
-
-                        break;
-                    }
-                }
-                _ => {}
+                write!(stdout, "[{}] {}\r\n", job_num, pid)?;
             }
+        } else {
+            if !Command::execute(&paths, and_chain, false)? {
+                stdout.flush()?;
+                stderr.flush()?;
+
+                break;
+            };
         }
     }
+
+    Ok(())
 }

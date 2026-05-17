@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.102"
+libc = "0.2.186"
 os_pipe = "1.2.3"
 termion = "4.0.6"
 thiserror = "2.0.18"

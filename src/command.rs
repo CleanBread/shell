@@ -1,8 +1,19 @@
 use anyhow::Result;
-use std::{env, mem, path::PathBuf, process};
+use std::{
+    env, fs,
+    io::{Write, pipe, stderr, stdout},
+    mem,
+    path::PathBuf,
+    process,
+};
+use termion::{
+    cursor::{self},
+    raw::IntoRawMode,
+};
 
 use crate::{
     execute_output::ExecuteOutput,
+    redirection::Redirection,
     utils::{CustomError, find_in_path},
 };
 
@@ -10,6 +21,11 @@ type Token = String;
 type CommandWithArgs = Vec<Token>;
 type Pipeline = Vec<CommandWithArgs>;
 type AndChain = Vec<Pipeline>;
+
+pub enum PipeInput {
+    Stream(process::ChildStdout),
+    Buffer(ExecuteOutput),
+}
 
 #[derive(PartialEq)]
 pub enum Command {
@@ -22,8 +38,16 @@ pub enum Command {
 }
 
 impl Command {
-    pub(crate) fn parse_input(input: &str) -> AndChain {
-        Self::parse_and_chain(input)
+    pub(crate) fn parse_input(input: &str) -> (AndChain, bool) {
+        let is_background_job = input.ends_with(" &");
+
+        let input = if is_background_job {
+            &input[..input.len() - 2]
+        } else {
+            input
+        };
+
+        let result = Self::parse_and_chain(input)
             .into_iter()
             .map(|pipeline| {
                 Self::parse_pipes(pipeline)
@@ -31,7 +55,9 @@ impl Command {
                     .map(Self::parse_command)
                     .collect()
             })
-            .collect()
+            .collect();
+
+        (result, is_background_job)
     }
 
     fn parse_pipes(input: &str) -> Vec<&str> {
@@ -149,6 +175,167 @@ impl Command {
         format!("{}\r\n", args.join(" ").replace("\\n", "\n")).into()
     }
 
+    pub(crate) fn execute(
+        paths: &[PathBuf],
+        and_chain: AndChain,
+        is_background: bool,
+    ) -> Result<bool> {
+        for pipeline in and_chain {
+            let mut children: Vec<process::Child> = vec![];
+            let mut pipe_input: Option<PipeInput> = None;
+
+            for command in pipeline {
+                let (command, args) = command.split_first().unwrap();
+
+                let command: Command = command.as_str().into();
+
+                let (args, redirection) = Redirection::extract(args);
+
+                match command {
+                    Command::External(external) => {
+                        let stdin = match pipe_input.take() {
+                            Some(input) => match input {
+                                PipeInput::Stream(child_stdout) => {
+                                    process::Stdio::from(child_stdout)
+                                }
+                                PipeInput::Buffer(buffer) => {
+                                    let (reader, mut writer) = pipe()?;
+
+                                    std::thread::spawn(move || writer.write(buffer.out.as_bytes()));
+
+                                    process::Stdio::from(reader)
+                                }
+                            },
+                            None => process::Stdio::inherit(),
+                        };
+
+                        let (stdout, stderr) = match redirection {
+                            Some(redirection) => match redirection {
+                                Redirection::RedirectStdout(path) => {
+                                    let file = fs::File::create(path)?;
+
+                                    (process::Stdio::from(file), process::Stdio::inherit())
+                                }
+                                Redirection::RedirectStderr(path) => {
+                                    let file = fs::File::create(path)?;
+
+                                    (process::Stdio::piped(), process::Stdio::from(file))
+                                }
+                                Redirection::AppendStdout(path) => {
+                                    let file = fs::OpenOptions::new()
+                                        .append(true)
+                                        .create(true)
+                                        .open(path)?;
+
+                                    (process::Stdio::from(file), process::Stdio::inherit())
+                                }
+                                Redirection::AppendStderr(path) => {
+                                    let file = fs::OpenOptions::new()
+                                        .append(true)
+                                        .create(true)
+                                        .open(path)?;
+
+                                    (process::Stdio::piped(), process::Stdio::from(file))
+                                }
+                            },
+                            None => (process::Stdio::piped(), process::Stdio::inherit()),
+                        };
+
+                        match Command::execute_external(
+                            &paths, &external, args, stdin, stdout, stderr,
+                        ) {
+                            Ok(mut child) => {
+                                pipe_input = match child.stdout.take() {
+                                    Some(out) => Some(PipeInput::Stream(out)),
+                                    None => Some(PipeInput::Buffer(ExecuteOutput::new())),
+                                };
+
+                                children.push(child);
+                            }
+                            Err(error) => {
+                                pipe_input =
+                                    Some(PipeInput::Buffer(ExecuteOutput::err(error.to_string())));
+
+                                break;
+                            }
+                        }
+                    }
+                    _ => {
+                        let output = command.execute_builtin(&args, &paths);
+
+                        if let Some(redirection) = redirection {
+                            match redirection {
+                                Redirection::RedirectStdout(path) => {
+                                    fs::write(path, output.out).ok();
+                                }
+                                Redirection::RedirectStderr(path) => {
+                                    fs::write(path, output.err).ok();
+                                }
+                                Redirection::AppendStdout(path) => {
+                                    let file =
+                                        fs::OpenOptions::new().append(true).create(true).open(path);
+
+                                    if let Result::Ok(mut file) = file {
+                                        file.write_all(output.out.as_bytes()).ok();
+                                    }
+                                }
+                                Redirection::AppendStderr(path) => {
+                                    let file =
+                                        fs::OpenOptions::new().append(true).create(true).open(path);
+
+                                    if let Result::Ok(mut file) = file {
+                                        file.write_all(output.err.as_bytes()).ok();
+                                    }
+                                }
+                            };
+                        } else {
+                            pipe_input = Some(PipeInput::Buffer(output))
+                        }
+                    }
+                };
+            }
+
+            for mut child in children {
+                child.wait()?;
+            }
+
+            match pipe_input {
+                Some(PipeInput::Stream(mut stream)) => {
+                    // stdout().suspend_raw_mode().unwrap();
+                    if is_background {
+                        write!(stdout(), "\r\n")?;
+                    }
+                    std::io::copy(&mut stream, &mut stdout())?;
+                    // stdout().activate_raw_mode().unwrap();
+                }
+                Some(PipeInput::Buffer(output)) => {
+                    if output.exit {
+                        return Ok(false);
+                    }
+
+                    if !output.out.is_empty() {
+                        if is_background {
+                            write!(stdout(), "\r\n")?;
+                        }
+                        write!(stdout(), "{}", output.out)?;
+                    }
+
+                    if !output.err.is_empty() {
+                        if is_background {
+                            write!(stderr(), "\r\n")?;
+                        }
+                        write!(stderr(), "{}", output.err)?;
+
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(true)
+    }
+
     pub(crate) fn execute_external(
         paths: &[PathBuf],
         command: &str,
@@ -156,7 +343,6 @@ impl Command {
         stdin: process::Stdio,
         stdout: process::Stdio,
         stderr: process::Stdio,
-        // input: Option<PipeInput>,
     ) -> Result<process::Child> {
         if let Some(entry) = find_in_path(paths, command, Some(0o111)) {
             let path = entry.path();
