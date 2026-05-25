@@ -6,13 +6,10 @@ use std::{
     path::PathBuf,
     process,
 };
-use termion::{
-    cursor::{self},
-    raw::IntoRawMode,
-};
 
 use crate::{
     execute_output::ExecuteOutput,
+    jobs::JOBS,
     redirection::Redirection,
     utils::{CustomError, find_in_path},
 };
@@ -29,6 +26,7 @@ pub enum PipeInput {
 
 #[derive(PartialEq)]
 pub enum Command {
+    Jobs,
     ChangeDirectory,
     Type,
     Echo,
@@ -173,6 +171,28 @@ impl Command {
 
     pub(crate) fn builtin_echo(args: &[String]) -> ExecuteOutput {
         format!("{}\r\n", args.join(" ").replace("\\n", "\n")).into()
+    }
+
+    pub(crate) fn builtin_jobs() -> ExecuteOutput {
+        let jobs = JOBS.lock().unwrap();
+        let mut lines = String::new();
+
+        for (index, (job_num, job)) in jobs.items.iter().enumerate() {
+            let prefix = if index + 1 == jobs.items.len() {
+                "+"
+            } else if index + 2 == jobs.items.len() {
+                "-"
+            } else {
+                " "
+            };
+
+            lines.push_str(&format!(
+                "[{}] {} running    {}\r\n",
+                job_num, prefix, job.command
+            ));
+        }
+
+        lines.into()
     }
 
     pub(crate) fn execute(
@@ -364,6 +384,7 @@ impl Command {
 
     pub(crate) fn execute_builtin(&self, args: &[String], paths: &[PathBuf]) -> ExecuteOutput {
         match self {
+            Command::Jobs => Command::builtin_jobs(),
             Command::ChangeDirectory => Command::builtin_cd(args),
             Command::Pwd => Command::builtin_pwd(),
             Command::Type => Command::builtin_type(&paths, args),
@@ -377,6 +398,7 @@ impl Command {
 impl From<&str> for Command {
     fn from(command: &str) -> Self {
         match command {
+            "jobs" => Command::Jobs,
             "cd" => Command::ChangeDirectory,
             "pwd" => Command::Pwd,
             "type" => Command::Type,

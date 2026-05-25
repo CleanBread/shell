@@ -1,43 +1,24 @@
 use anyhow::Result;
 use libc::{POLLIN, SIGCHLD, WNOHANG, c_int, fork, pollfd};
 use os_pipe::pipe;
-use std::collections::BTreeMap;
 use std::io::{Write, stderr, stdin, stdout};
 use std::os::unix::io::AsRawFd;
-use std::sync::LazyLock;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{Mutex, mpsc};
+use std::sync::mpsc;
 use std::thread;
 use termion::{cursor, event::Key, input::TermRead, raw::IntoRawMode};
 
 use crate::{
     command::Command,
+    jobs::{JOBS, Job},
     utils::{get_input, get_paths},
 };
 
 mod command;
 mod execute_output;
+mod jobs;
 mod redirection;
 mod utils;
-
-#[derive(Debug)]
-pub struct Job {
-    pid: i32,
-    command: String,
-}
-
-#[derive(Debug)]
-struct Jobs {
-    items: BTreeMap<u32, Job>,
-    next_counter: u32,
-}
-
-static JOBS: LazyLock<Mutex<Jobs>> = LazyLock::new(|| {
-    Mutex::new(Jobs {
-        items: BTreeMap::new(),
-        next_counter: 1,
-    })
-});
 
 static SIGCHLD_PIPE_WRITE: AtomicI32 = AtomicI32::new(-1);
 
@@ -108,12 +89,20 @@ pub fn run() -> Result<()> {
                     .map(|(num, _)| *num);
 
                 if let Some(num) = job_num {
-                    let job = jobs.items.remove(&num).unwrap();
-                    jobs.next_counter = num;
+                    let job = jobs.items.shift_remove(&num).unwrap();
 
-                    write!(std::io::stdout(), "\r[{}] Done    {}\r\n", num, job.command).unwrap();
+                    if jobs.next_counter > num {
+                        jobs.next_counter = num;
+                    }
+
+                    write!(
+                        std::io::stdout(),
+                        "\r[{}]   done       {}\r\n",
+                        num,
+                        job.command
+                    )
+                    .unwrap();
                     std::io::stdout().flush().unwrap();
-                    // eprintln!("\r[{}] Done    {}\r\n", num, job.command); // debug
                 }
             }
         }
@@ -153,7 +142,11 @@ pub fn run() -> Result<()> {
                     },
                 );
 
-                jobs.next_counter = *jobs.items.last_key_value().unwrap().0;
+                let mut next_counter: u32 = 1;
+                while jobs.items.contains_key(&next_counter) {
+                    next_counter += 1;
+                }
+                jobs.next_counter = next_counter;
 
                 write!(stdout, "[{}] {}\r\n", job_num, pid)?;
             }
