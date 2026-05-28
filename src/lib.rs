@@ -74,10 +74,13 @@ pub fn run() -> Result<()> {
             unsafe { libc::read(sigchld_rfd, buf.as_mut_ptr() as *mut libc::c_void, 64) };
 
             loop {
-                let pid = unsafe { libc::waitpid(-1, std::ptr::null_mut(), WNOHANG) };
+                let mut status: i32 = 0;
+                let pid = unsafe { libc::waitpid(-1, &mut status, WNOHANG) };
+
                 if pid <= 0 {
                     break;
                 }
+
                 let mut jobs = JOBS.lock().unwrap();
 
                 job_tx.send(pid).ok();
@@ -95,13 +98,24 @@ pub fn run() -> Result<()> {
                         jobs.next_counter = num;
                     }
 
-                    write!(
-                        std::io::stdout(),
-                        "\r[{}]   done       {}\r\n",
-                        num,
-                        job.command
-                    )
-                    .unwrap();
+                    if libc::WIFSIGNALED(status) {
+                        write!(
+                            std::io::stdout(),
+                            "\r[{}]   killed     {}\r\n",
+                            num,
+                            job.command
+                        )
+                        .unwrap();
+                    } else {
+                        write!(
+                            std::io::stdout(),
+                            "\r[{}]   done       {}\r\n",
+                            num,
+                            job.command
+                        )
+                        .unwrap();
+                    }
+
                     std::io::stdout().flush().unwrap();
                 }
             }

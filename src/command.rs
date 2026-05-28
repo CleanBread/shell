@@ -26,6 +26,7 @@ pub enum PipeInput {
 
 #[derive(PartialEq)]
 pub enum Command {
+    Kill,
     Jobs,
     ChangeDirectory,
     Type,
@@ -193,6 +194,40 @@ impl Command {
         }
 
         lines.into()
+    }
+
+    pub(crate) fn builtin_kill(args: &[String]) -> ExecuteOutput {
+        let (id, is_job_number) = match args.first() {
+            Some(arg) => match arg.strip_prefix('%') {
+                Some(val) => (val, true),
+                None => (arg.as_str(), false),
+            },
+            None => return ExecuteOutput::err("kill: no arguments".to_string()),
+        };
+
+        let Ok(id) = id.parse::<u32>() else {
+            return ExecuteOutput::err(format!("kill: invalid id: {}", id));
+        };
+
+        let pid = if is_job_number {
+            match JOBS.lock().unwrap().items.get(&id) {
+                Some(job) => job.pid,
+                None => return ExecuteOutput::err(format!("kill: %{}: no such job", id)),
+            }
+        } else {
+            id as i32
+        };
+
+        let result = unsafe { libc::kill(pid, libc::SIGTERM) };
+        if result == -1 {
+            return ExecuteOutput::err(format!(
+                "kill: {}: {}",
+                pid,
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        ExecuteOutput::new()
     }
 
     pub(crate) fn execute(
@@ -384,6 +419,7 @@ impl Command {
 
     pub(crate) fn execute_builtin(&self, args: &[String], paths: &[PathBuf]) -> ExecuteOutput {
         match self {
+            Command::Kill => Command::builtin_kill(args),
             Command::Jobs => Command::builtin_jobs(),
             Command::ChangeDirectory => Command::builtin_cd(args),
             Command::Pwd => Command::builtin_pwd(),
@@ -398,6 +434,7 @@ impl Command {
 impl From<&str> for Command {
     fn from(command: &str) -> Self {
         match command {
+            "kill" => Command::Kill,
             "jobs" => Command::Jobs,
             "cd" => Command::ChangeDirectory,
             "pwd" => Command::Pwd,
