@@ -16,6 +16,7 @@ use crate::{
 
 mod command;
 mod execute_output;
+mod history;
 mod jobs;
 mod redirection;
 mod utils;
@@ -148,11 +149,12 @@ pub fn run() -> Result<()> {
             } else {
                 let mut jobs = JOBS.lock().unwrap();
                 let job_num = jobs.next_counter;
+                let command_str = &input[..input.len() - 2];
                 jobs.items.insert(
                     job_num,
                     Job {
                         pid,
-                        command: input.clone(),
+                        command: command_str.into(),
                     },
                 );
 

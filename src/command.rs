@@ -9,6 +9,7 @@ use std::{
 
 use crate::{
     execute_output::ExecuteOutput,
+    history::HISTORY,
     jobs::JOBS,
     redirection::Redirection,
     utils::{CustomError, find_in_path},
@@ -26,6 +27,7 @@ pub enum PipeInput {
 
 #[derive(PartialEq)]
 pub enum Command {
+    History,
     Kill,
     Jobs,
     ChangeDirectory,
@@ -230,6 +232,25 @@ impl Command {
         ExecuteOutput::new()
     }
 
+    pub(crate) fn builtin_history(args: &[String]) -> ExecuteOutput {
+        let history = HISTORY.lock().unwrap();
+
+        let skip = args
+            .first()
+            .and_then(|a| a.parse::<usize>().ok())
+            .map(|n| history.len().saturating_sub(n))
+            .unwrap_or(0);
+
+        let lines = history
+            .iter()
+            .enumerate()
+            .skip(skip)
+            .map(|(i, cmd)| format!("{:>6} {}\r\n", i + 1, cmd))
+            .collect::<String>();
+
+        lines.into()
+    }
+
     pub(crate) fn execute(
         paths: &[PathBuf],
         and_chain: AndChain,
@@ -419,6 +440,7 @@ impl Command {
 
     pub(crate) fn execute_builtin(&self, args: &[String], paths: &[PathBuf]) -> ExecuteOutput {
         match self {
+            Command::History => Command::builtin_history(args),
             Command::Kill => Command::builtin_kill(args),
             Command::Jobs => Command::builtin_jobs(),
             Command::ChangeDirectory => Command::builtin_cd(args),
@@ -434,6 +456,7 @@ impl Command {
 impl From<&str> for Command {
     fn from(command: &str) -> Self {
         match command {
+            "history" => Command::History,
             "kill" => Command::Kill,
             "jobs" => Command::Jobs,
             "cd" => Command::ChangeDirectory,
