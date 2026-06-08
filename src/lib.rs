@@ -8,6 +8,7 @@ use std::sync::mpsc;
 use std::thread;
 use termion::{cursor, event::Key, input::TermRead, raw::IntoRawMode};
 
+use crate::history::History;
 use crate::{
     command::Command,
     jobs::{JOBS, Job},
@@ -170,6 +171,7 @@ pub fn run() -> Result<()> {
             if !Command::execute(&paths, and_chain, false)? {
                 stdout.flush()?;
                 stderr.flush()?;
+                History::store();
 
                 break;
             };

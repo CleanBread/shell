@@ -233,7 +233,7 @@ impl Command {
     }
 
     pub(crate) fn builtin_history(args: &[String]) -> ExecuteOutput {
-        let history = HISTORY.lock().unwrap();
+        let history = &HISTORY.lock().unwrap().items;
 
         let skip = args
             .first()

@@ -96,7 +96,7 @@ pub fn get_input(key_rx: &Receiver<Key>, job_rx: &Receiver<i32>) -> Result<Strin
                 }
             }
             Ok(Key::Up) => {
-                let history = HISTORY.lock().expect("err");
+                let history = &HISTORY.lock().unwrap().items;
                 if history.is_empty() {
                     continue;
                 }
@@ -119,7 +119,7 @@ pub fn get_input(key_rx: &Receiver<Key>, job_rx: &Receiver<i32>) -> Result<Strin
                 history_index = Some(next_index);
             }
             Ok(Key::Down) => {
-                let history = HISTORY.lock().expect("err");
+                let history = &HISTORY.lock().unwrap().items;
                 let Some(index) = history_index else { continue };
 
                 let (next_index, new_input) = if index == history.len() - 1 {
@@ -142,7 +142,7 @@ pub fn get_input(key_rx: &Receiver<Key>, job_rx: &Receiver<i32>) -> Result<Strin
     let result = input.trim().to_string();
 
     if !result.is_empty() {
-        let mut history = HISTORY.lock().expect("123");
+        let history = &mut HISTORY.lock().unwrap().items;
         history.push(result.clone());
     }
 
