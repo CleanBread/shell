@@ -13,6 +13,7 @@ use crate::{
     jobs::JOBS,
     redirection::Redirection,
     utils::{CustomError, find_in_path},
+    variables::VARS,
 };
 
 type Token = String;
@@ -27,6 +28,7 @@ pub enum PipeInput {
 
 #[derive(PartialEq)]
 pub enum Command {
+    Declare,
     History,
     Kill,
     Jobs,
@@ -251,6 +253,39 @@ impl Command {
         lines.into()
     }
 
+    pub(crate) fn builtion_declare(args: &[String]) -> ExecuteOutput {
+        let mut vars = VARS.lock().unwrap();
+
+        let Some(arg) = args.first() else {
+            return ExecuteOutput::new();
+        };
+
+        if arg == "-p"
+            && let Some(var) = args.get(1)
+        {
+            if let Some(value) = vars.get(var) {
+                return format!("declare -- {}=\"{}\"", var, value).into();
+            } else {
+                return ExecuteOutput::err(format!("declare: {}: not found", var));
+            }
+        }
+
+        if arg.starts_with(|c: char| c.is_ascii_digit()) {
+            return ExecuteOutput::err(format!("declare: `{}': not a valid identifier", arg));
+        }
+
+        match arg.split_once('=') {
+            Some((var, value)) => {
+                vars.insert(var.to_string(), value.to_string());
+            }
+            None => {
+                vars.insert(arg.to_string(), String::new());
+            }
+        }
+
+        ExecuteOutput::new()
+    }
+
     pub(crate) fn execute(
         paths: &[PathBuf],
         and_chain: AndChain,
@@ -440,6 +475,7 @@ impl Command {
 
     pub(crate) fn execute_builtin(&self, args: &[String], paths: &[PathBuf]) -> ExecuteOutput {
         match self {
+            Command::Declare => Command::builtion_declare(args),
             Command::History => Command::builtin_history(args),
             Command::Kill => Command::builtin_kill(args),
             Command::Jobs => Command::builtin_jobs(),
@@ -456,6 +492,7 @@ impl Command {
 impl From<&str> for Command {
     fn from(command: &str) -> Self {
         match command {
+            "declare" => Command::Declare,
             "history" => Command::History,
             "kill" => Command::Kill,
             "jobs" => Command::Jobs,

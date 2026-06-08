@@ -21,6 +21,7 @@ mod history;
 mod jobs;
 mod redirection;
 mod utils;
+mod variables;
 
 static SIGCHLD_PIPE_WRITE: AtomicI32 = AtomicI32::new(-1);
 
