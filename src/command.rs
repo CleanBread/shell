@@ -13,7 +13,7 @@ use crate::{
     jobs::JOBS,
     redirection::Redirection,
     utils::{CustomError, find_in_path},
-    variables::VARS,
+    variables::{VARS, expand_vars},
 };
 
 type Token = String;
@@ -270,7 +270,7 @@ impl Command {
             }
         }
 
-        if arg.starts_with(|c: char| c.is_ascii_digit()) {
+        if arg.starts_with(|c: char| c.is_ascii_digit()) || arg.starts_with("$") {
             return ExecuteOutput::err(format!("declare: `{}': not a valid identifier", arg));
         }
 
@@ -295,11 +295,12 @@ impl Command {
             let mut children: Vec<process::Child> = vec![];
             let mut pipe_input: Option<PipeInput> = None;
 
-            for command in pipeline {
-                let (command, args) = command.split_first().unwrap();
+            for mut command_with_args in pipeline {
+                expand_vars(&mut command_with_args);
+
+                let (command, args) = command_with_args.split_first_mut().unwrap();
 
                 let command: Command = command.as_str().into();
-
                 let (args, redirection) = Redirection::extract(args);
 
                 match command {
